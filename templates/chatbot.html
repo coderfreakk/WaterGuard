@@ -143,7 +143,7 @@
     chatBox.innerHTML += `<div><strong>You:</strong> ${msg}</div>`;
 
     try {
-      const response = await axios.post('http://localhost:5000/chat', { prompt: msg });
+      const response = await axios.post('https://waterguard.onrender.com/chat', { prompt: msg });
       // Render as HTML so bullet lists display properly
       chatBox.innerHTML += `<div><strong>AquaBot:</strong></div><div class="bot-reply">${response.data.reply}</div>`;
     } catch (err) {
