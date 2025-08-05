@@ -1,9 +1,12 @@
 from flask import Flask, request, jsonify, render_template, current_app
 from flask_cors import CORS
+import json
+from datetime import date
 import traceback
 import os
 import re
 import smtplib
+import threading #for db
 from email.message import EmailMessage
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_core.messages import HumanMessage
@@ -58,6 +61,8 @@ def water_test():
 @app.route('/book_kit')
 def book_kit_page():
     return render_template('book_kit.html')
+
+
 
 # ----------------------------------------------------------------------
 
@@ -142,6 +147,46 @@ def send_email(to, subject, body):
         smtp.login(SENDER_EMAIL, SENDER_PASS)
         smtp.send_message(msg)
 
+
+# --------------------- JSON STORAGE SETUP (ADDED) ---------------------
+# --- ADDED: data directory and file paths
+DATA_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
+USERS_FILE = os.path.join(DATA_DIR, "users.json")
+BOOKINGS_FILE = os.path.join(DATA_DIR, "bookings.json")
+
+# --- ADDED: ensure data directory exists
+os.makedirs(DATA_DIR, exist_ok=True)
+
+# --- ADDED: simple thread lock to reduce concurrent write collisions
+_file_lock = threading.Lock()
+
+def _read_json_file(path):
+    """Return list from JSON file, or empty list if not present or invalid."""
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except FileNotFoundError:
+        return []
+    except json.JSONDecodeError:
+        # If file is corrupted, backup and start fresh list
+        try:
+            os.rename(path, path + ".bak")
+        except Exception:
+            pass
+        return []
+
+def _write_json_file(path, data):
+    """Write JSON atomically (simple)."""
+    # Acquire lock for thread-safety within the same process
+    with _file_lock:
+        tmp_path = path + ".tmp"
+        with open(tmp_path, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=4, ensure_ascii=False)
+        # atomic replace
+        os.replace(tmp_path, path)
+
+# ----------------------------------------------------------------------
+
 # --------------------- Book Your Kit Route ---------------------
 @app.route('/book-kit', methods=['GET', 'POST'])
 def book_kit():
@@ -153,8 +198,26 @@ def book_kit():
     email = data.get("email")
     phone = data.get("phone")
     address = data.get("address")
-    date = data.get("date")
+    date_val = data.get("date")
 
+        # --- ADDED: Save booking to bookings.json (minimal fields)
+    try:
+        booking_entry = {
+            "name": name,
+            "email": email,
+            "phone": phone,
+            "address": address,
+            "date": date_val,
+            "saved_at": str(date.today())
+        }
+        bookings = _read_json_file(BOOKINGS_FILE)
+        bookings.append(booking_entry)
+        _write_json_file(BOOKINGS_FILE, bookings)
+    except Exception as ex:
+        # log but do not break main flow
+        current_app.logger.error("Failed to save booking to JSON: %s", ex, exc_info=True)
+
+        # ---------------------------
     subject = "✅ WaterGuard Kit Booking Confirmed!"
     body = f"""Hi {name},
 
@@ -192,6 +255,25 @@ def signup():
     data = request.json
     name = data.get("name")
     email = data.get("email")
+
+        # --- ADDED: capture optional phone and password if client sends them
+    phone = data.get("phone")
+    password = data.get("password")  # NOTE: storing plaintext — see warnings below
+
+    # --- ADDED: Save signup to users.json
+    try:
+        user_entry = {
+            "name": name,
+            "email": email,
+            "phone": phone,
+            "password": password,
+            "signup_date": str(date.today())
+        }
+        users = _read_json_file(USERS_FILE)
+        users.append(user_entry)
+        _write_json_file(USERS_FILE, users)
+    except Exception as ex:
+        current_app.logger.error("Failed to save signup to JSON: %s", ex, exc_info=True)
 
     subject = "🎉 Welcome to WaterGuard!"
     body = f"""Hi {name},
