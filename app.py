@@ -1,6 +1,8 @@
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, render_template, current_app
 from flask_cors import CORS
+import traceback
 import os
+import re
 import smtplib
 from email.message import EmailMessage
 from langchain_google_genai import ChatGoogleGenerativeAI
@@ -36,10 +38,34 @@ llm = ChatGoogleGenerativeAI(
 #     except Exception as e:
 #         return jsonify({"message": f"❌ Failed: {str(e)}"})
 
+
+@app.route('/')
+def home():
+    return render_template('index.html')
+
+@app.route('/chatbot')
+def chatbot():
+    return render_template('chatbot.html')
+
+@app.route('/signup-form')
+def signup_form():
+    return render_template('signup.html')
+
+@app.route('/water_test')
+def water_test():
+    return render_template('water_test.html')
+
+@app.route('/book_kit')
+def book_kit_page():
+    return render_template('book_kit.html')
+
+# ----------------------------------------------------------------------
+
+
 @app.route('/chat', methods=['POST'])
 def chat():
-    data = request.json
-    user_prompt = data.get("prompt", "")
+    data = request.json or {}
+    user_prompt = data.get("prompt", "").strip()
 
     if not user_prompt:
         return jsonify({"reply": "❌ Please provide a valid question."}), 400
@@ -47,14 +73,56 @@ def chat():
     try:
         prompt = (
             "You are AquaBot, an expert on water sanitation and cleaning. "
-            "Answer the user's question clearly and accurately with practical and reliable information.\n\n"
+            "Give answers in bullet points where possible. "
+            "Keep it concise and to the point, under 250 words. "
+            "Avoid markdown symbols like ** and format each key point as a new line.\n\n"
             f"User's Question: {user_prompt}\n"
             "Answer:"
         )
+
         response = llm.invoke([HumanMessage(content=prompt)])
-        return jsonify({"reply": response.content.strip()})
+        raw = response.content.strip()
+
+        # remove markdown bold and other simple markdown tokens
+        text = re.sub(r"\*\*(.*?)\*\*", r"\1", raw)
+        text = re.sub(r"`{1,3}(.*?)`{1,3}", r"\1", text)   # inline code backticks
+        text = re.sub(r"\[(.*?)\]\(.*?\)", r"\1", text)   # links [text](url) -> text
+
+        # split into meaningful lines
+        lines = []
+        for line in text.splitlines():
+            ln = line.strip()
+            if not ln:
+                continue
+            # remove common list markers
+            ln = re.sub(r'^[\-\*\u2022]\s*', '', ln)   # -, *, • 
+            ln = re.sub(r'^\d+\.\s*', '', ln)          # 1. 2. etc
+            lines.append(ln)
+
+        # Fallback: if only one long line, try split by semicolon or comma into bullets
+        if len(lines) <= 1:
+            single = lines[0] if lines else text
+            if len(single) > 120 and (',' in single or ';' in single):
+                parts = re.split(r';\s+|,\s+', single)
+                parts = [p.strip() for p in parts if p.strip()]
+                if len(parts) > 1:
+                    lines = parts
+
+        # Build HTML reply
+        if len(lines) > 1:
+            html = "<ul>" + "".join(f"<li>{re.sub(r'<', '&lt;', item)}</li>" for item in lines) + "</ul>"
+        else:
+            # single short reply — preserve paragraphs
+            # convert double-newlines to <p> blocks
+            paragraphs = [p.strip() for p in text.split("\n\n") if p.strip()]
+            html = "".join(f"<p>{re.sub(r'<', '&lt;', p)}</p>" for p in paragraphs)
+
+        return jsonify({"reply": html})
+
     except Exception as e:
+        current_app.logger.error("Chat handler error: %s", e, exc_info=True)
         return jsonify({"reply": f"❌ An error occurred: {str(e)}"}), 500
+
 
 # --------------------- Email Sender Config ---------------------
 SENDER_EMAIL = os.getenv("SENDER_EMAIL")
@@ -75,8 +143,11 @@ def send_email(to, subject, body):
         smtp.send_message(msg)
 
 # --------------------- Book Your Kit Route ---------------------
-@app.route('/book-kit', methods=['POST'])
+@app.route('/book-kit', methods=['GET', 'POST'])
 def book_kit():
+    if request.method == 'GET':
+         return render_template("book_kit.html")
+
     data = request.json
     name = data.get("name")
     email = data.get("email")
@@ -113,8 +184,11 @@ Stay safe & drink clean 🌊
         return jsonify({"message": f"❌ Email sending failed: {str(e)}"}), 500
 
 # --------------------- Signup Route ---------------------
-@app.route('/signup', methods=['POST'])
+@app.route('/signup', methods=['GET', 'POST'])
 def signup():
+    if request.method == 'GET':
+        return render_template("signup.html")
+
     data = request.json
     name = data.get("name")
     email = data.get("email")
