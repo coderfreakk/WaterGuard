@@ -26,6 +26,4 @@ It allows users to check water quality, book doorstep water testing kits, and ge
 ---
 
 
-💖 Author
 
-Developed with ❤️ by Neha
